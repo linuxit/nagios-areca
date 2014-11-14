@@ -1,0 +1,182 @@
+#!/bin/bash
+# -*-shell-script-*-
+#
+#   check_areca_raid
+#
+#   Copyright 2013 LinuxIT (Europe) Ltd
+#
+#   Author: Sam Pearson <sam.pearson@linuxit.com>
+#
+#   License: GNU General Public License
+#
+#   This program is free software: you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation, either version 2 of the License, or
+#   (at your option) any later version.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+# Variables
+# Set these as appropriate
+CLI=/usr/bin/cli64
+TEMP_FN=/tmp/check_areca_raid.$$
+# These can be left alone
+STATE_OK=0
+STATE_CRITICAL=2
+STATE_WARNING=1
+STATE_UNKNOWN=3
+STATE_DEPENDENT=4
+exit_string=
+exit_code=$STATE_OK
+what_to_check=
+version="20130208.02"
+
+# Usage and help
+print_help() {
+    echo 
+    echo "Summary"
+    echo "This is a simple script that will make a bundle of checks with the areca"
+    echo "CLI utility. The user running this script will need to have sudo access"
+    echo "to run the utility."
+    echo
+    echo "Configuration"
+    echo "You need to set the vaiable CLI to the path of the installed verson of"
+    echo "the utility (this is currently set to $CLI.) You can also adjust the"
+    echo "location of a temporary file (default: /tmp/check_areca_raid.PID.)"
+    echo
+    echo "Output"
+    echo 'The check will return OK if everything is reported as "Normal" or'
+    echo 'CRITICAL in all other cases. Details should be in the output.'
+    echo
+    echo "Usage"
+    echo "  $0 [ --all | all ]       - check all available subsystems"
+    echo "  $0 [ --vsf | vsf ]       - check Volumes"
+    echo "  $0 [ --rsf | rsf ]       - check RAID Sets"
+    echo "  $0 [ --version | -v ]    - Show version and copyright"
+    echo
+}
+
+print_version() {
+    
+    echo
+    echo "$( echo $0 | sed -e 's/.*\///' ), version $version"
+    echo "Copyright 2013 LinuxIT (Europe) Ltd"
+    echo "Licensed under the GPLv2"
+    echo
+}
+
+# Note that you can't pipe into a while loop and expect the changes made
+# to any variables to be visible to the main script as the subshell means
+# that the variables are only passed one way, into the script. Hence the 
+# use of the temp file rather than piping the $CLI command into the loop.
+
+# Check Volumes
+check_vsf () {
+    sudo $CLI vsf info  >$TEMP_FN
+    while read LINE; do
+    if ! echo "$LINE" | egrep -q '^ *[0-9]' ;then continue; fi
+    vol=$( echo $LINE | awk '{ print $2 }' )
+    state=$( echo $LINE | awk '{ print $7 }' )
+    exit_string+="Volume $vol is $state. "
+    if [ "$state" != "Normal" ]; then
+        exit_code=$STATE_CRITICAL
+	fi
+    done < "$TEMP_FN"
+}
+
+# Check RAID Sets
+check_rsf () {
+    sudo $CLI rsf info  >$TEMP_FN
+    while read LINE; do
+        if ! echo "$LINE" | egrep -q '^ *[0-9]' ; then continue; fi
+        raid=$( echo $LINE | awk '{ print $2 }' )
+        state=$( echo $LINE | awk '{ print $7 }' )
+        exit_string+="RAID Set $raid is $state. "
+	if [ "$state" != "Normal" ]; then
+            exit_code=$STATE_CRITICAL
+        fi
+    done < "$TEMP_FN"
+}
+
+# Options processing
+while test -n "$1"; do
+    case "$1" in
+        --help|-h)
+    	    print_help
+	    exit $STATE_OK
+	    ;;
+	all|--all)
+	    what_to_check="all"
+	    ;;
+	vsf|--vsf)
+	    what_to_check="vsf"
+	    ;;
+	rsf|--rsf)
+	    what_to_check="rsf"
+	    ;;
+	--version|-v)
+	    print_version
+	    exit $STATE_OK
+	    ;;
+	*)
+	    echo "Unknown Argument: $1"
+	    print_help
+	    exit $STATE_UNKNOWN
+	    ;;
+    esac
+    shift
+done
+
+# Sanity check on $what_to_check
+if [ "$what_to_check" == "" ]; then
+   echo "Don't know what to check."
+   print_help
+   exit $STATE_UNKNOWN
+fi
+
+# Sanity checks on $CLI
+if [ ! -n $CLI ]; then
+    echo 'You need to set a value for the $CLI variable.'
+    print_help
+    exit $STATE_UNKNOWN
+elif [ ! -x $CLI ]; then
+    echo "$CLI doesn't appear to be executable. Please check."
+    print_help
+    exit $STATE_UNKNOWN
+elif ! sudo -l | grep -q $CLI; then
+    echo "SUDO access to $CLI doesn't appear to be enabled."
+    print_help
+    exit $STATE_UNKNOWN
+fi
+
+# Actual stuff :)
+
+# init tempfile
+touch $TEMP_FN    
+
+# Work out what we've been asked to check
+if [ "$what_to_check" == "all" ]; then
+    check_vsf
+    check_rsf
+elif [ "$what_to_check" == "vsf" ]; then
+    check_vsf
+elif [ "$what_to_check" == "rsf" ]; then
+    check_rsf
+else
+    exit_string="Unknown subsystem: $what_to_check"
+    exit_code=$STATE_UNKNOWN
+fi
+
+# clean-up
+rm $TEMP_FN
+
+# exit nicely
+echo $exit_string
+exit $exit_code
